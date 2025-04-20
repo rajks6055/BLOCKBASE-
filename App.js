@@ -1,56 +1,50 @@
 import React, { useState, useEffect } from 'react';
-import { ethers } from 'ethers';  // Library for interacting with Ethereum blockchain
+import { ethers } from 'ethers';
 import './App.css';
-import ExpenseTrackerABI from './ExpenseTrackerABI.json';  // This contains information about how to talk to our smart contract
+import ExpenseTrackerABI from './ExpenseTrackerABI.json';
 
 function App() {
-  // --- VARIABLES STORED IN THE COMPONENT (STATE) ---
-  // These variables can change and when they do, the page will update
-  const [provider, setProvider] = useState(null);  // Connection to the Ethereum network
-  const [contract, setContract] = useState(null);  // Our expense tracker smart contract
-  const [account, setAccount] = useState('');  // User's Ethereum wallet address
-  const [isConnected, setIsConnected] = useState(false);  // Whether user connected their wallet
-  const [isRegistered, setIsRegistered] = useState(false);  // Whether user registered their name
-  const [name, setName] = useState('');  // User's name
-  const [expenses, setExpenses] = useState([]);  // List of all expenses
-  const [people, setPeople] = useState([]);  // List of all registered people
-  const [loadingExpenses, setLoadingExpenses] = useState(false);  // Whether expenses are being loaded
-  const [expenseLabel, setExpenseLabel] = useState('');  // Description for a new expense
-  const [participants, setParticipants] = useState([{ address: '', amountPaid: 0, amountOwed: 0 }]);  // People involved in a new expense
-  const [showAddExpense, setShowAddExpense] = useState(false);  // Whether to show the "Add Expense" form
-  const contractAddress = "0xb30818574D5Ee27Ab096293BABD5df5eb70e3cA5"; // Paste the address recieved from Remix IDE here
+  // State variables
+  const [provider, setProvider] = useState(null);
+  const [contract, setContract] = useState(null);
+  const [account, setAccount] = useState('');
+  const [isConnected, setIsConnected] = useState(false);
+  const [isRegistered, setIsRegistered] = useState(false);
+  const [name, setName] = useState('');
+  const [newName, setNewName] = useState('');
+  const [expenses, setExpenses] = useState([]);
+  const [people, setPeople] = useState([]);
+  const [totalUsers, setTotalUsers] = useState(0);
+  const [lastExpenseLabel, setLastExpenseLabel] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [expenseLabel, setExpenseLabel] = useState('');
+  const [participants, setParticipants] = useState([{ address: '', amountPaid: 0, amountOwed: 0 }]);
+  const [showAddExpense, setShowAddExpense] = useState(false);
+  const contractAddress = "0xd9145CCE52D386f254917e481eB44e9943F39138";
 
-  // --- RUNS WHEN THE PAGE FIRST LOADS ---
-  // This connects to the user's Ethereum wallet (like MetaMask)
+  // Initialize connection
   useEffect(() => {
     const init = async () => {
-      // Check if MetaMask (or similar wallet) is installed
       if (window.ethereum) {
         try {
-          // Ask user permission to connect to their wallet
           await window.ethereum.request({ method: 'eth_requestAccounts' });
-          // Create a connection to Ethereum
-          const providerInstance = new ethers.providers.Web3Provider(window.ethereum);
-          setProvider(providerInstance);
+          const provider = new ethers.providers.Web3Provider(window.ethereum);
+          setProvider(provider);
 
-          // Check if user is on the right Ethereum network (Sepolia test network)
-          const network = await providerInstance.getNetwork();
-          if (network.chainId !== 11155111) {  // 11155111 is the ID for Sepolia testnet
+          const network = await provider.getNetwork();
+          if (network.chainId !== 11155111) {
             alert("Please connect to Sepolia testnet.");
             return;
           }
 
-          // Get user's account and save it
-          const signer = providerInstance.getSigner();
+          const signer = provider.getSigner();
           const address = await signer.getAddress();
           setAccount(address);
           setIsConnected(true);
 
-          // Connect to our expense tracker smart contract
-          const contractInstance = new ethers.Contract(contractAddress, ExpenseTrackerABI, signer);
-          setContract(contractInstance);
+          const contract = new ethers.Contract(contractAddress, ExpenseTrackerABI, signer);
+          setContract(contract);
 
-          // Listen for user changing their account in MetaMask
           window.ethereum.on('accountsChanged', (accounts) => {
             setAccount(accounts[0] || '');
             setIsConnected(accounts.length > 0);
@@ -60,244 +54,162 @@ function App() {
           console.error("Initialization error:", error);
         }
       } else {
-        // If MetaMask is not installed
         alert("Please install MetaMask.");
       }
     };
 
-    init();  // Run the initialization function
+    init();
+    return () => window.ethereum?.removeAllListeners('accountsChanged');
+  }, []);
 
-    // Clean up when component unmounts (good practice to prevent memory leaks)
-    return () => {
-      if (window.ethereum) {
-        window.ethereum.removeAllListeners('accountsChanged');
-      }
-    };
-  }, []);  // Empty array means this runs only once when page loads
-
-  // --- RUNS WHEN CONTRACT OR ACCOUNT CHANGES ---
-  // Checks if user is registered and loads their data
+  // Load data when contract/account changes
   useEffect(() => {
-    const checkRegistration = async () => {
-      if (!contract || !account) return;  // Skip if contract or account isn't ready
-
+    const loadData = async () => {
+      if (!contract || !account) return;
       try {
-        // Ask the contract if this user is registered
-        const person = await contract.getPerson(account);
-        const registered = person.walletAddress !== ethers.constants.AddressZero;
-        setIsRegistered(registered);
-        
-        if (registered) {
-          setName(person.name);  // Save the user's name
-          await loadExpenses();  // Load all expenses
-          await loadPeople();  // Load all registered people
+        const [person, count, lastLabel] = await Promise.all([
+          contract.getPerson(account),
+          contract.getRegisteredCount(),
+          contract.expenseCount() > 0 ? contract.getLastExpenseLabel() : Promise.resolve("")
+        ]);
+
+        setIsRegistered(person.walletAddress !== ethers.constants.AddressZero);
+        if (isRegistered) {
+          setName(person.name);
+          setTotalUsers(count.toNumber());
+          setLastExpenseLabel(lastLabel);
+          await loadExpenses();
+          await loadPeople();
         }
       } catch (error) {
-        console.error("Error checking registration:", error);
+        console.error("Error loading data:", error);
       }
     };
-    checkRegistration();
-  }, [contract, account]);  // Run this when contract or account changes
+    loadData();
+  }, [contract, account]);
 
-  // --- DEBUGGING HELP ---
-  // Prints expense information to console for troubleshooting
-  useEffect(() => {
-    if (expenses.length > 0) {
-      console.log("LOADED EXPENSES:", expenses);
-      console.log("LOADED PEOPLE:", people);
-      
-      // Print each expense's details to the console
-      expenses.forEach(expense => {
-        console.log(`Expense: ${expense.label}`);
-        expense.participants.forEach(p => {
-          console.log(`  Participant: ${p.address.substring(0, 8)}...`);
-          console.log(`    Paid: ${p.amountPaid} ETH, Owes: ${p.amountOwed} ETH`);
-          console.log(`    Net: ${parseFloat(p.amountPaid) - parseFloat(p.amountOwed)} ETH`);
-        });
-      });
-    }
-  }, [expenses, people]);  // Run when expenses or people change
-
-  // --- REGISTER NEW USER ---
-  // Saves user's name to the blockchain
-  const registerPerson = async () => {
-    if (!name.trim()) {  // Check if name is empty
-      alert("Please enter your name.");
-      return;
-    }
-    try {
-      // Call the registerPerson function in our smart contract
-      const tx = await contract.registerPerson(name.trim());
-      await tx.wait();  // Wait for transaction to be confirmed on blockchain
-      setIsRegistered(true);
-      alert("Registration successful!");
-      await loadPeople();  // Refresh list of people
-      await loadExpenses();  // Refresh list of expenses
-    } catch (error) {
-      console.error("Registration failed:", error);
-      alert(`Registration failed: ${error.message}`);
-    }
-  };
-
-  // --- LOAD ALL EXPENSES ---
-  // Gets all expenses from the blockchain
+  // Load expenses
   const loadExpenses = async () => {
-    if (!contract || !isRegistered) return;  // Skip if not ready
-    setLoadingExpenses(true);  // Show loading indicator
+    setLoading(true);
     try {
-      // Get the total number of expenses
       const count = await contract.expenseCount();
       const loaded = [];
-  
-      // Loop through each expense and load its details
       for (let i = 0; i < count; i++) {
-        try {
-          // Get basic expense info
-          const [id, label, timestamp] = await contract.getExpenseBasicInfo(i);
-          // Get list of addresses involved in this expense
-          const participantsAddresses = await contract.getExpenseParticipants(i);
-  
-          // For each participant, get how much they paid and owe
-          const participantsData = await Promise.all(
-            participantsAddresses.map(async (address) => {
-              try {
-                const amountPaid = await contract.getAmountPaid(i, address);
-                const amountOwed = await contract.getAmountOwed(i, address);
-                return {
-                  address,
-                  amountPaid: ethers.utils.formatEther(amountPaid),  // Convert from wei to ETH
-                  amountOwed: ethers.utils.formatEther(amountOwed),  // Convert from wei to ETH
-                };
-              } catch (error) {
-                console.error(`Error loading amounts for participant ${address}:`, error);
-                return { address, amountPaid: "0", amountOwed: "0" };
-              }
-            })
-          );
-  
-          // Add this expense to our list
-          loaded.push({
-            id: id.toNumber(),  // Convert from BigNumber to regular number
-            label,
-            timestamp: new Date(timestamp.toNumber() * 1000).toLocaleString(),  // Convert timestamp to readable date
-            participants: participantsData,
-          });
-        } catch (error) {
-          console.error(`Error loading expense ${i}:`, error);
-        }
+        const [id, label, timestamp] = await contract.getExpenseBasicInfo(i);
+        const participants = await contract.getExpenseParticipants(i);
+        const participantsData = await Promise.all(
+          participants.map(async (address) => ({
+            address,
+            amountPaid: ethers.utils.formatEther(await contract.getAmountPaid(i, address)),
+            amountOwed: ethers.utils.formatEther(await contract.getAmountOwed(i, address))
+          }))
+        );
+        loaded.push({
+          id: id.toNumber(),
+          label,
+          timestamp: new Date(timestamp.toNumber() * 1000).toLocaleString(),
+          participants: participantsData
+        });
       }
-  
-      setExpenses(loaded);  // Save all expenses to state
+      setExpenses(loaded);
     } catch (error) {
       console.error("Error loading expenses:", error);
-      alert("Could not load expenses. Check console.");
     } finally {
-      setLoadingExpenses(false);  // Hide loading indicator
+      setLoading(false);
     }
   };
-  
-  // --- LOAD ALL REGISTERED PEOPLE ---
-  // Gets list of all registered users
+
+  // Load people
   const loadPeople = async () => {
-    if (!contract) return;  // Skip if contract isn't ready
     try {
-      // Get all registered addresses
       const addresses = await contract.getAllRegisteredPeople();
-      // For each address, get their name and balance
       const peopleData = await Promise.all(
-        addresses.map(async (address) => {
-          const person = await contract.getPerson(address);
-          const netBalance = await contract.getNetBalance(address);
-          return {
-            address,
-            name: person.name,
-            netBalance: ethers.utils.formatEther(netBalance),  // Convert from wei to ETH
-          };
-        })
+        addresses.map(async (address) => ({
+          address,
+          name: (await contract.getPerson(address)).name,
+          netBalance: ethers.utils.formatEther(await contract.getNetBalance(address))
+        }))
       );
-      setPeople(peopleData);  // Save people to state
+      setPeople(peopleData);
     } catch (error) {
       console.error("Error loading people:", error);
     }
   };
 
-  // --- ADD NEW EXPENSE ---
-  // Creates a new expense on the blockchain
-  const addExpense = async () => {
-    // Input validation
-    if (!expenseLabel.trim()) {
-      alert("Enter an expense label.");
-      return;
-    }
-    if (participants.length === 0) {
-      alert("Add at least one participant.");
-      return;
-    }
-
-    for (const participant of participants) {
-      if (!participant.address || participant.amountPaid < 0 || participant.amountOwed < 0) {
-        alert("Participant details are invalid.");
-        return;
-      }
-    }
-
+  // Register user
+  const registerUser = async () => {
+    if (!name.trim()) return;
     try {
-      // Prepare data for the smart contract
-      const addresses = participants.map(p => p.address.trim());
-      const paidAmounts = participants.map(p => ethers.utils.parseEther(p.amountPaid.toString()));  // Convert ETH to wei
-      const owedAmounts = participants.map(p => ethers.utils.parseEther(p.amountOwed.toString()));  // Convert ETH to wei
-
-      // Call the addExpense function in our smart contract
-      const tx = await contract.addExpense(expenseLabel, addresses, paidAmounts, owedAmounts);
-      await tx.wait();  // Wait for transaction to be confirmed
-
-      // Reset form and reload data
-      setExpenseLabel('');
-      setParticipants([{ address: '', amountPaid: 0, amountOwed: 0 }]);
-      setShowAddExpense(false);
-      await loadExpenses();
+      const tx = await contract.registerPerson(name.trim());
+      await tx.wait();
+      setIsRegistered(true);
       await loadPeople();
     } catch (error) {
-      console.error("Error adding expense:", error);
+      alert(`Registration failed: ${error.message}`);
+    }
+  };
+
+  // Update name
+  const updateName = async () => {
+    if (!newName.trim()) return;
+    try {
+      const tx = await contract.updateName(newName.trim());
+      await tx.wait();
+      setName(newName);
+      setNewName('');
+      alert("Name updated!");
+    } catch (error) {
       alert(`Error: ${error.message}`);
     }
   };
 
-  // --- HELPER FUNCTIONS FOR PARTICIPANTS ---
-  // Add a new participant row to the form
-  const addParticipant = () => {
-    setParticipants([...participants, { address: '', amountPaid: 0, amountOwed: 0 }]);
+  // Add expense
+  const addExpense = async () => {
+    if (!expenseLabel.trim() || participants.length === 0) return;
+    try {
+      const addresses = participants.map(p => p.address.trim());
+      const paid = participants.map(p => ethers.utils.parseEther(p.amountPaid.toString()));
+      const owed = participants.map(p => ethers.utils.parseEther(p.amountOwed.toString()));
+
+      const tx = await contract.addExpense(expenseLabel, addresses, paid, owed);
+      await tx.wait();
+      setExpenseLabel('');
+      setParticipants([{ address: '', amountPaid: 0, amountOwed: 0 }]);
+      setShowAddExpense(false);
+      await loadExpenses();
+    } catch (error) {
+      alert(`Error: ${error.message}`);
+    }
   };
 
-  // Update a participant's information
+  // Participant helpers
   const updateParticipant = (index, field, value) => {
     const updated = [...participants];
     updated[index][field] = value;
     setParticipants(updated);
   };
 
-  // Remove a participant from the form
+  const addParticipant = () => {
+    setParticipants([...participants, { address: '', amountPaid: 0, amountOwed: 0 }]);
+  };
+
   const removeParticipant = (index) => {
     if (participants.length > 1) {
       setParticipants(participants.filter((_, i) => i !== index));
     }
   };
 
-  // --- THE PAGE LAYOUT (USER INTERFACE) ---
+  // UI
   return (
     <div className="App">
       <header className="App-header">
         <h1>On-Chain Expense Tracker</h1>
         
-        {/* STEP 1: CONNECT WALLET - Show if not connected */}
         {!isConnected ? (
           <button onClick={() => window.ethereum.request({ method: 'eth_requestAccounts' })}>
             Connect Wallet
           </button>
-        ) 
-        
-        /* STEP 2: REGISTER - Show if connected but not registered */
-        : !isRegistered ? (
+        ) : !isRegistered ? (
           <div>
             <h2>Register</h2>
             <input
@@ -306,21 +218,32 @@ function App() {
               value={name}
               onChange={(e) => setName(e.target.value)}
             />
-            <button onClick={registerPerson}>Register</button>
+            <button onClick={registerUser}>Register</button>
           </div>
-        ) 
-        
-        /* STEP 3: MAIN APP - Show if connected and registered */
-        : (
+        ) : (
           <div>
             <h2>Welcome, {name}</h2>
             <p>Account: {account}</p>
+            <p>Total Registered Users: {totalUsers}</p>
+            <p>Last Expense: {lastExpenseLabel || "None"}</p>
+
+            <div>
+              <input
+                type="text"
+                placeholder="New name"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+              />
+              <button onClick={updateName}>Update Name</button>
+            </div>
+
             <button onClick={() => setShowAddExpense(!showAddExpense)}>
               {showAddExpense ? "Cancel" : "Add Expense"}
             </button>
-            <button onClick={loadExpenses}>Refresh Expenses</button>
+            <button onClick={loadExpenses} disabled={loading}>
+              {loading ? "Loading..." : "Refresh Expenses"}
+            </button>
 
-            {/* ADD EXPENSE FORM - Show when "Add Expense" is clicked */}
             {showAddExpense && (
               <div>
                 <h3>New Expense</h3>
@@ -330,7 +253,6 @@ function App() {
                   value={expenseLabel}
                   onChange={(e) => setExpenseLabel(e.target.value)}
                 />
-                {/* For each participant, show input fields */}
                 {participants.map((p, idx) => (
                   <div key={idx}>
                     <input
@@ -340,13 +262,13 @@ function App() {
                     />
                     <input
                       type="number"
-                      placeholder="Paid"
+                      placeholder="Paid (ETH)"
                       value={p.amountPaid}
                       onChange={(e) => updateParticipant(idx, 'amountPaid', e.target.value)}
                     />
                     <input
                       type="number"
-                      placeholder="Owed"
+                      placeholder="Owed (ETH)"
                       value={p.amountOwed}
                       onChange={(e) => updateParticipant(idx, 'amountOwed', e.target.value)}
                     />
@@ -358,60 +280,53 @@ function App() {
               </div>
             )}
 
-            {/* PEOPLE LIST - Show all registered users */}
             <h3>People</h3>
-            <table style={{ borderCollapse: 'collapse', margin: '10px 0' }}>
+            <table>
               <thead>
                 <tr>
-                  <th style={{ padding: '8px', border: '1px solid #ddd' }}>Name</th>
-                  <th style={{ padding: '8px', border: '1px solid #ddd' }}>Address</th>
-                  <th style={{ padding: '8px', border: '1px solid #ddd' }}>Net Balance</th>
+                  <th>Name</th>
+                  <th>Address</th>
+                  <th>Net Balance</th>
                 </tr>
               </thead>
               <tbody>
-                {people.map((person, idx) => (
+                {people.map((p, idx) => (
                   <tr key={idx}>
-                    <td style={{ padding: '8px', border: '1px solid #ddd' }}>{person.name}</td>
-                    <td style={{ padding: '8px', border: '1px solid #ddd' }}>{person.address.substring(0, 8)}...</td>
-                    <td style={{ padding: '8px', border: '1px solid #ddd', color: parseFloat(person.netBalance) < 0 ? 'red' : 'green' }}>
-                      {parseFloat(person.netBalance).toFixed(5)} ETH
+                    <td>{p.name}</td>
+                    <td>{p.address.substring(0, 8)}...</td>
+                    <td style={{ color: parseFloat(p.netBalance) < 0 ? 'red' : 'green' }}>
+                      {parseFloat(p.netBalance).toFixed(5)} ETH
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
 
-            {/* EXPENSE HISTORY - Show all expenses */}
             <h3>Expense History</h3>
-            {loadingExpenses ? <p>Loading...</p> : (
-              expenses.map(expense => (
-                <div key={expense.id} style={{ border: '1px solid #ddd', margin: '10px 0', padding: '10px' }}>
-                  <h4>{expense.label}</h4>
-                  <p>{expense.timestamp}</p>
-                  <table style={{ borderCollapse: 'collapse', width: '100%' }}>
-                    <thead>
-                      <tr>
-                        <th style={{ padding: '5px', border: '1px solid #ddd' }}>Participant</th>
-                        <th style={{ padding: '5px', border: '1px solid #ddd' }}>Paid</th>
-                        <th style={{ padding: '5px', border: '1px solid #ddd' }}>Owes</th>
+            {expenses.map(expense => (
+              <div key={expense.id}>
+                <h4>{expense.label}</h4>
+                <p>{expense.timestamp}</p>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Participant</th>
+                      <th>Paid</th>
+                      <th>Owes</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {expense.participants.map((p, idx) => (
+                      <tr key={idx}>
+                        <td>{people.find(u => u.address === p.address)?.name || p.address.substring(0, 8)}...</td>
+                        <td>{p.amountPaid} ETH</td>
+                        <td>{p.amountOwed} ETH</td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {expense.participants.map((p, idx) => (
-                        <tr key={idx}>
-                          <td style={{ padding: '5px', border: '1px solid #ddd' }}>
-                            {/* Show name if found, otherwise show shortened address */}
-                            {people.find(person => person.address === p.address)?.name || p.address.substring(0, 8)}...
-                          </td>
-                          <td style={{ padding: '5px', border: '1px solid #ddd' }}>{p.amountPaid} ETH</td>
-                          <td style={{ padding: '5px', border: '1px solid #ddd' }}>{p.amountOwed} ETH</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ))
-            )}
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ))}
           </div>
         )}
       </header>
